@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"strings"
 	"path/filepath"
+	"log"
 )
 
 type gocovercheck struct {
@@ -23,7 +24,9 @@ type gocovercheck struct {
 	coverprofile string
 	stdout string
 	stderr string
+	verbose bool
 
+	logout io.Writer
 	cmdArgs []string
 
 	cmdRun func(*exec.Cmd) error
@@ -43,6 +46,7 @@ func Wrap(err error, fmtString string, args ...interface{}) error {
 
 var Main = gocovercheck{
 	cmdRun: runCmd,
+	logout: ioutil.Discard,
 }
 
 func runCmd(c *exec.Cmd) error {
@@ -57,14 +61,19 @@ func init() {
 	flag.StringVar(&Main.coverprofile, "coverprofile", "", "Coverage profile output")
 	flag.StringVar(&Main.stdout, "stdout", "", "File to pipe stdout to.  - means stdout")
 	flag.StringVar(&Main.stderr, "stderr", "", "File to pipe stderr to.  - means stderr")
+
+	flag.BoolVar(&Main.verbose, "verbose", false, "If set, will send to stderr verbose logging out")
 }
 
 func main() {
 	flag.Parse()
 	Main.cmdArgs = flag.Args()
+	if Main.verbose {
+		Main.logout = os.Stderr
+	}
 	err := Main.main()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s\n", err.Error())
+		fmt.Fprintf(os.Stdout, "%s\n", err.Error())
 		os.Exit(1)
 	}
 }
@@ -90,6 +99,7 @@ func forFile(filename string, dash io.WriteCloser) (io.WriteCloser, error) {
 }
 
 func (g *gocovercheck) main() error {
+	l := log.New(g.logout, "[gocovercheck]", 0)
 	cmd := "go"
 	args := []string{"test", "-covermode", "atomic"}
 	if g.race {
@@ -109,6 +119,8 @@ func (g *gocovercheck) main() error {
 		defer os.Remove(coverProfileFile.Name())
 		coverProfileFile.Close()
 		g.coverprofile = coverProfileFile.Name()
+
+		l.Printf("Setting coverprofile to %s\n", g.coverprofile)
 	}
 
 	args = append(args, "-coverprofile", g.coverprofile)
@@ -130,13 +142,16 @@ func (g *gocovercheck) main() error {
 	e := exec.Command(cmd, args...)
 	e.Stdout = stdout
 	e.Stderr = stderr
+	l.Printf("Running cmd=[%s] args=[%v]\n", cmd, strings.Join(args, ", "))
 	if err := g.cmdRun(e); err != nil {
 		return Wrap(err, "cannot run command")
 	}
+	l.Printf("Finished running command\n")
 	coverage, err := calculateCoverage(g.coverprofile)
 	if err != nil {
 		return Wrap(err, "cannot load coverage profile file")
 	}
+	l.Printf("Calculated coverage %.2f\n", coverage)
 	if coverage + .001 < g.requiredCoverage {
 		return fmt.Errorf("%s::warning:Code coverage %.3f less than required %f", guessPackageName(g.coverprofile), coverage, g.requiredCoverage)
 	}

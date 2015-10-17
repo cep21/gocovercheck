@@ -4,6 +4,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	"os"
 	"os/exec"
+	"io/ioutil"
 )
 
 func TestForFile(t *testing.T) {
@@ -30,6 +31,7 @@ func TestForMyself(t *testing.T) {
 			cmdRun: func(*exec.Cmd) error {
 				return nil
 			},
+			logout: ioutil.Discard,
 		}
 		Convey("should run", func() {
 			err := g.main()
