@@ -1,10 +1,12 @@
 package main
+
 import (
-	"testing"
-	. "github.com/smartystreets/goconvey/convey"
+	"io/ioutil"
 	"os"
 	"os/exec"
-	"io/ioutil"
+	"testing"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestForFile(t *testing.T) {

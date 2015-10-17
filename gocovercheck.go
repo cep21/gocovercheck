@@ -1,32 +1,34 @@
 package main
+
 import (
-	"flag"
-	"time"
-	"strconv"
-	"os/exec"
-	"io"
-	"os"
-	"io/ioutil"
-	"golang.org/x/tools/cover"
-	"fmt"
-	"bytes"
 	"bufio"
-	"strings"
-	"path/filepath"
+	"bytes"
+	"flag"
+	"fmt"
+	"io"
+	"io/ioutil"
 	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"golang.org/x/tools/cover"
 )
 
 type gocovercheck struct {
 	requiredCoverage float64
-	race bool
-	timeout time.Duration
-	parallel int64
-	coverprofile string
-	stdout string
-	stderr string
-	verbose bool
+	race             bool
+	timeout          time.Duration
+	parallel         int64
+	coverprofile     string
+	stdout           string
+	stderr           string
+	verbose          bool
 
-	logout io.Writer
+	logout  io.Writer
 	cmdArgs []string
 
 	cmdRun func(*exec.Cmd) error
@@ -36,6 +38,7 @@ type wrappedError struct {
 	msg string
 	err error
 }
+
 func (w *wrappedError) Error() string {
 	return fmt.Sprintf("%s: %s", w.msg, w.err)
 }
@@ -152,7 +155,7 @@ func (g *gocovercheck) main() error {
 		return Wrap(err, "cannot load coverage profile file")
 	}
 	l.Printf("Calculated coverage %.2f\n", coverage)
-	if coverage + .001 < g.requiredCoverage {
+	if coverage+.001 < g.requiredCoverage {
 		return fmt.Errorf("%s::warning:Code coverage %.3f less than required %f", guessPackageName(g.coverprofile), coverage, g.requiredCoverage)
 	}
 	return nil
