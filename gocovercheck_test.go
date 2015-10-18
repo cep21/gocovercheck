@@ -28,8 +28,9 @@ func TestForFile(t *testing.T) {
 func TestForMyself(t *testing.T) {
 	Convey("My own coverage", t, func() {
 		g := gocovercheck{
-			stdout: "",
-			stderr: "",
+			stdout:    "",
+			stderr:    "",
+			testFlags: "[]",
 			cmdRun: func(*exec.Cmd) error {
 				return nil
 			},

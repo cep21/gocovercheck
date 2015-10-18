@@ -11,20 +11,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"time"
+
+	"encoding/json"
 
 	"golang.org/x/tools/cover"
 )
 
 type gocovercheck struct {
 	verbose          bool
-	race             bool
 	requiredCoverage float64
-	timeout          time.Duration
-	parallel         int64
 	coverprofile     string
+	testFlags        string
 	stdout           string
 	stderr           string
 
@@ -58,9 +56,8 @@ func runCmd(c *exec.Cmd) error {
 
 func init() {
 	flag.Float64Var(&mainGoCoverCheck.requiredCoverage, "required_coverage", 0, "Sets the required coverage for non zero error code.")
-	flag.BoolVar(&mainGoCoverCheck.race, "race", false, "Set race detection")
-	flag.DurationVar(&mainGoCoverCheck.timeout, "timeout", 0, "Timeout testing")
-	flag.Int64Var(&mainGoCoverCheck.parallel, "parallel", 0, "Parallel testing")
+	flag.StringVar(&mainGoCoverCheck.testFlags, "testflags", "[]", "JSON array of cmd line flags to pass to test command")
+
 	flag.StringVar(&mainGoCoverCheck.coverprofile, "coverprofile", "", "Coverage profile output")
 	flag.StringVar(&mainGoCoverCheck.stdout, "stdout", "", "File to pipe stdout to.  - means stdout")
 	flag.StringVar(&mainGoCoverCheck.stderr, "stderr", "", "File to pipe stderr to.  - means stderr")
@@ -103,15 +100,6 @@ func forFile(filename string, dash io.WriteCloser) (io.WriteCloser, error) {
 
 func (g *gocovercheck) setupBasicArgs() []string {
 	args := make([]string, 0, 5)
-	if g.race {
-		args = append(args, "-race")
-	}
-	if g.timeout.Nanoseconds() > 0 {
-		args = append(args, "-timeout", g.timeout.String())
-	}
-	if g.parallel > 0 {
-		args = append(args, "-parallel", strconv.FormatInt(g.parallel, 10))
-	}
 	args = append(args, "-coverprofile", g.coverprofile)
 	return args
 }
@@ -138,6 +126,12 @@ func (g *gocovercheck) main() error {
 
 	args = append(args, g.setupBasicArgs()...)
 
+	params := make([]string, 0, 5)
+	if err := json.Unmarshal([]byte(g.testFlags), &params); err != nil {
+		return wraperr(err, "Invalid test flags.  Must be []string{}: %s", g.testFlags)
+	}
+	args = append(args, params...)
+
 	stdout, err := forFile(g.stdout, os.Stdout)
 	if err != nil {
 		return wraperr(err, "Cannot open stdout pipe file")
@@ -160,7 +154,7 @@ func (g *gocovercheck) main() error {
 	e := exec.Command(cmd, args...)
 	e.Stdout = stdout
 	e.Stderr = stderr
-	l.Printf("Running cmd=[%s] args=[%v]\n", cmd, strings.Join(args, ", "))
+	l.Printf("Running cmd=[%s] args=[%v]\n", cmd, strings.Join(args, " "))
 	return g.runCmd(l, e)
 }
 
