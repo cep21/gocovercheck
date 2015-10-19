@@ -15,7 +15,10 @@ import (
 
 	"encoding/json"
 
+	"errors"
+
 	"golang.org/x/tools/cover"
+	"regexp"
 )
 
 type gocovercheck struct {
@@ -25,11 +28,17 @@ type gocovercheck struct {
 	testFlags        string
 	stdout           string
 	stderr           string
+	dirout string
 
 	logout  io.Writer
+	log     *log.Logger
 	cmdArgs []string
 
+	bestGuessPackageName string
+
 	cmdRun func(*exec.Cmd) error
+
+	cleanupFunctions []func()
 }
 
 type wrappedError struct {
@@ -62,6 +71,8 @@ func init() {
 	flag.StringVar(&mainGoCoverCheck.stdout, "stdout", "", "File to pipe stdout to.  - means stdout")
 	flag.StringVar(&mainGoCoverCheck.stderr, "stderr", "", "File to pipe stderr to.  - means stderr")
 
+	flag.StringVar(&mainGoCoverCheck.dirout, "dirout", "", "If set, will change stdout, stderr, and coverprofile to all coexist inside dirout with arg default params")
+
 	flag.BoolVar(&mainGoCoverCheck.verbose, "verbose", false, "If set, will send to stderr verbose logging out")
 }
 
@@ -73,7 +84,7 @@ func main() {
 	}
 	err := mainGoCoverCheck.main()
 	if err != nil {
-		fmt.Fprintf(os.Stdout, "%s\n", err.Error())
+		fmt.Fprintf(os.Stdout, "%s::warning:%s\n", mainGoCoverCheck.bestGuessPackageName, err.Error())
 		os.Exit(1)
 	}
 }
@@ -104,24 +115,89 @@ func (g *gocovercheck) setupBasicArgs() []string {
 	return args
 }
 
+func (g *gocovercheck) Close() error {
+	for _, f := range g.cleanupFunctions {
+		f()
+	}
+	return nil
+}
+
+func (g *gocovercheck) addCleanup(f func()) {
+	g.cleanupFunctions = append(g.cleanupFunctions, f)
+}
+
+func (g *gocovercheck) setupTempCoverProfile() error {
+	coverProfileFile, err2 := ioutil.TempFile("", "gocovercheck")
+	if err2 != nil {
+		return wraperr(err2, "Cannot create gocovercheck temp file")
+	}
+	g.addCleanup(func() {
+		g.log.Printf("Removing file %s", coverProfileFile.Name())
+		logIfErr(g.log, os.Remove(coverProfileFile.Name()), "Unable to remove cover profile file.")
+	})
+	if err2 := coverProfileFile.Close(); err2 != nil {
+		return wraperr(err2, "Unable to close originally opened cover file")
+	}
+	g.coverprofile = coverProfileFile.Name()
+	g.log.Printf("Setting coverprofile to %s\n", g.coverprofile)
+	return nil
+}
+
+func (g *gocovercheck) setupRedirect(filename string, dash io.WriteCloser) (io.WriteCloser, error) {
+	stdout, err := forFile(filename, dash)
+	if err != nil {
+		return nil, wraperr(err, "Cannot open pipe file")
+	}
+	if stdout != dash {
+		g.addCleanup(func() {
+			logIfErr(g.log, stdout.Close(), "Unable to finish closing out")
+		})
+	}
+	return stdout, nil
+}
+
+var validFilenames = regexp.MustCompile("[^A-Za-z0-9\\._-]+")
+
+func sanitizeForDirectory(s string) string {
+	s = strings.TrimSpace(s)
+	s = validFilenames.ReplaceAllString(s, "_")
+
+	return s
+}
+
 func (g *gocovercheck) main() error {
-	l := log.New(g.logout, "[gocovercheck]", 0)
+	defer func() {
+		logIfErr(mainGoCoverCheck.log, g.Close(), "Should never happen")
+	}()
+	g.log = log.New(mainGoCoverCheck.logout, "[gocovercheck]", 0)
+	wd, err := os.Getwd()
+	if err != nil {
+		return wraperr(err, "unable to get cwd")
+	}
+	g.bestGuessPackageName = filepath.Clean(wd)
+
+	if len(g.cmdArgs) > 1 {
+		return errors.New("Please only pass one directory to run tests inside\n")
+	}
+	cmdDir := ""
+	if len(g.cmdArgs) == 1 {
+		cmdDir = flag.Args()[0]
+		g.bestGuessPackageName = cmdDir
+	}
+
+	if g.dirout != "" {
+		bestGuessFilename := sanitizeForDirectory(g.bestGuessPackageName)
+		g.coverprofile = filepath.Join(g.dirout, fmt.Sprintf("%s.code_coverage.txt", bestGuessFilename))
+		g.stderr = filepath.Join(g.dirout, fmt.Sprintf("%s.stderr.txt", bestGuessFilename))
+		g.stdout = filepath.Join(g.dirout, fmt.Sprintf("%s.stdout.txt", bestGuessFilename))
+	}
+
 	cmd := "go"
 	args := []string{"test", "-covermode", "atomic"}
 	if g.coverprofile == "" {
-		coverProfileFile, err := ioutil.TempFile("", "gocovercheck")
-		if err != nil {
-			return wraperr(err, "Cannot create gocovercheck temp file")
+		if err := g.setupTempCoverProfile(); err != nil {
+			return wraperr(err, "unable to create temp cover profile")
 		}
-		defer func() {
-			logIfErr(l, os.Remove(coverProfileFile.Name()), "Unable to remove cover profile file.")
-		}()
-		if err := coverProfileFile.Close(); err != nil {
-			return wraperr(err, "Unable to close originally opened cover file")
-		}
-		g.coverprofile = coverProfileFile.Name()
-
-		l.Printf("Setting coverprofile to %s\n", g.coverprofile)
 	}
 
 	args = append(args, g.setupBasicArgs()...)
@@ -132,44 +208,41 @@ func (g *gocovercheck) main() error {
 	}
 	args = append(args, params...)
 
-	stdout, err := forFile(g.stdout, os.Stdout)
+	stdout, err := g.setupRedirect(g.stdout, os.Stdout)
 	if err != nil {
 		return wraperr(err, "Cannot open stdout pipe file")
 	}
-	if stdout != os.Stdout {
-		defer func() {
-			logIfErr(l, stdout.Close(), "Unable to finish closing stdout")
-		}()
-	}
-	stderr, err := forFile(g.stderr, os.Stderr)
+
+	stderr, err := g.setupRedirect(g.stderr, os.Stderr)
 	if err != nil {
 		return wraperr(err, "Cannot open stderr pipe file")
 	}
-	if stderr != os.Stderr {
-		defer func() {
-			logIfErr(l, stderr.Close(), "Unable to close stderr")
-		}()
-	}
-	args = append(args, g.cmdArgs...)
+
 	e := exec.Command(cmd, args...)
 	e.Stdout = stdout
 	e.Stderr = stderr
-	l.Printf("Running cmd=[%s] args=[%v]\n", cmd, strings.Join(args, " "))
-	return g.runCmd(l, e)
+	e.Dir = cmdDir
+	g.log.Printf("Running cmd=[%s] args=[%v]\n", cmd, strings.Join(args, " "))
+	return g.runCmd(e)
 }
 
-func (g *gocovercheck) runCmd(l *log.Logger, e *exec.Cmd) error {
-	if err := g.cmdRun(e); err != nil {
-		return wraperr(err, "cannot run command")
+func (g *gocovercheck) runCmd(e *exec.Cmd) error {
+	runErr := g.cmdRun(e)
+	guessedPackageName := guessPackageName(g.log, g.coverprofile)
+	if guessedPackageName != defaultPackageName {
+		g.bestGuessPackageName = guessedPackageName
 	}
-	l.Printf("Finished running command\n")
+	if runErr != nil {
+		return wraperr(runErr, "test command did not run correctly")
+	}
+	g.log.Printf("Finished running command\n")
 	coverage, err := calculateCoverage(g.coverprofile)
 	if err != nil {
 		return wraperr(err, "cannot load coverage profile file")
 	}
-	l.Printf("Calculated coverage %.2f\n", coverage)
+	g.log.Printf("Calculated coverage %.2f\n", coverage)
 	if coverage+.001 < g.requiredCoverage {
-		return fmt.Errorf("%s::warning:Code coverage %.3f less than required %f", guessPackageName(l, g.coverprofile), coverage, g.requiredCoverage)
+		return fmt.Errorf("Code coverage %.4f less than required %.4f", coverage, g.requiredCoverage)
 	}
 	return nil
 }
